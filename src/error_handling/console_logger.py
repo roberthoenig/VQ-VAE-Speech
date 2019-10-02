@@ -24,7 +24,7 @@
  #   SOFTWARE.                                                                       #
  #####################################################################################
 
-from error_handling.color_print import ColorPrint
+from ..error_handling.color_print import ColorPrint
 
 import sys
 import traceback

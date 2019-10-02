@@ -33,12 +33,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class ConvolutionalEncoder(nn.Module):
+class UnstridedConvolutionalEncoder(nn.Module):
     
     def __init__(self, num_hiddens, num_outs, num_residual_layers, num_residual_hiddens,
         use_kaiming_normal, features_filters, verbose=False, use_dilation=False):
 
-        super(ConvolutionalEncoder, self).__init__()
+        super().__init__()
         print(f"ConvolutionalEncoder.__init__ called with num_hiddens = {num_hiddens}")
 
         dilation_base = 2 if use_dilation else 1
@@ -50,7 +50,7 @@ class ConvolutionalEncoder(nn.Module):
             kernel_size=self.kernel_size,
             use_kaiming_normal=use_kaiming_normal,
             dilation=dilation_base**0,
-            stride=self.kernel_size
+            pad_right_only=True
         )
 
         self._conv_2 = Conv1DBuilder.build(
@@ -59,7 +59,7 @@ class ConvolutionalEncoder(nn.Module):
             kernel_size=self.kernel_size,
             use_kaiming_normal=use_kaiming_normal,
             dilation = dilation_base**1,
-            stride=1
+            pad_right_only=True
         )
 
         self._conv_3 = Conv1DBuilder.build(
@@ -68,7 +68,7 @@ class ConvolutionalEncoder(nn.Module):
             kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
             dilation = dilation_base**2,
-            stride=self.kernel_size
+            pad_right_only=True
         )
 
         self._conv_4 = Conv1DBuilder.build(
@@ -77,7 +77,7 @@ class ConvolutionalEncoder(nn.Module):
             kernel_size=self.kernel_size,
             use_kaiming_normal=use_kaiming_normal,
             dilation = dilation_base**3,
-            stride=1
+            pad_right_only=True
         )
 
         self._conv_5 = Conv1DBuilder.build(
@@ -86,7 +86,7 @@ class ConvolutionalEncoder(nn.Module):
             kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
             dilation = dilation_base**4,
-            stride=self.kernel_size
+            pad_right_only=True
         )
 
         """
@@ -100,29 +100,23 @@ class ConvolutionalEncoder(nn.Module):
             num_residual_hiddens=num_residual_hiddens,
             use_kaiming_normal=use_kaiming_normal,
             init_dilation = dilation_base**4,
-            dilation_base = dilation_base
-        )
-
-        self._conv_post_residual_stack = Conv1DBuilder.build(
-            in_channels=num_hiddens,
-            out_channels=num_hiddens,
-            kernel_size=3,
-            use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**5,
-            stride=self.kernel_size
+            dilation_base = dilation_base,
+            pad_right_only=True
         )
 
         """
         1 postprocessing convolution to obtain the desired num_outs
         channels.
         """
-        self._conv_out = nn.Conv1d(
+        self._conv_out = Conv1DBuilder.build(
             in_channels=num_hiddens,
             out_channels=num_outs,
             kernel_size=3,
-            padding=1
+            use_kaiming_normal=use_kaiming_normal,
+            dilation = dilation_base**4,
+            pad_right_only=True
         )
-        
+
         self._verbose = verbose
 
     def forward(self, inputs):
@@ -137,17 +131,15 @@ class ConvolutionalEncoder(nn.Module):
         if self._verbose:
             ConsoleLogger.status('_conv_2 output size: {}'.format(x_conv_2.size()))
         
-        x_conv_3 = F.relu(self._conv_3(x_conv_2))
+        x_conv_3 = F.relu(self._conv_3(x_conv_2)) + x_conv_2
         if self._verbose:
             ConsoleLogger.status('_conv_3 output size: {}'.format(x_conv_3.size()))
-        # x_conv_3 = x
-
 
         x_conv_4 = F.relu(self._conv_4(x_conv_3)) + x_conv_3
         if self._verbose:
             ConsoleLogger.status('_conv_4 output size: {}'.format(x_conv_4.size()))
 
-        x_conv_5 = F.relu(self._conv_5(x_conv_4))
+        x_conv_5 = F.relu(self._conv_5(x_conv_4)) + x_conv_4
         if self._verbose:
             ConsoleLogger.status('x_conv_5 output size: {}'.format(x_conv_5.size()))
 
@@ -155,11 +147,7 @@ class ConvolutionalEncoder(nn.Module):
         if self._verbose:
             ConsoleLogger.status('_residual_stack output size: {}'.format(x_residual_stack.size()))
 
-        x_conv_post_residual_stack = self._conv_post_residual_stack(x_residual_stack)
-        if self._verbose:
-            ConsoleLogger.status('_conv_post_residual_stack output size: {}'.format(x_conv_post_residual_stack.size()))
-
-        x = self._conv_out(x_conv_post_residual_stack)
+        x = self._conv_out(x_residual_stack)
         if self._verbose:
             ConsoleLogger.status('_conv_out output size: {}'.format(x.size()))
 

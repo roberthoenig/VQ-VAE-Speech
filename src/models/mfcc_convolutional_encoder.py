@@ -31,53 +31,91 @@ from ..error_handling.console_logger import ConsoleLogger
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 
+from wavenet_utils import augmented_mfcc
 
-class ConvolutionalEncoder(nn.Module):
+class MFCC():
+    def __init__(self, winlen, winstep, numcep, sampling_rate=16000):
+        self.winlen = winlen
+        self.winstep = winstep
+        self.numcep = numcep
+        self.sampling_rate = sampling_rate
+    
+    def __call__(self, data):
+        '''
+        data: (n_batches, length)
+        returns: (n_batches, n_channels, downsampled_length)
+        '''
+        data = data - 128  # TODO: un-hardcode
+        mfccs_out = [augmented_mfcc(
+                x.squeeze().cpu().numpy(),
+                winlen=self.winlen/self.sampling_rate,
+                winstep=self.winstep/self.sampling_rate,
+                numcep=self.numcep,
+                appendEnergy=True
+            ).transpose() for x in data.split(1, dim=0)]
+        torch_mfccs_out = torch.stack([torch.tensor(x, dtype=torch.float).to(data.device) for x in mfccs_out])
+        torch.set_printoptions(sci_mode=False)
+        return torch_mfccs_out
+
+class MFCCConvolutionalEncoder(nn.Module):
     
     def __init__(self, num_hiddens, num_outs, num_residual_layers, num_residual_hiddens,
-        use_kaiming_normal, features_filters, verbose=False, use_dilation=False):
+        use_kaiming_normal, features_filters, winlen, winstep, numcep, verbose=False):
 
-        super(ConvolutionalEncoder, self).__init__()
-        print(f"ConvolutionalEncoder.__init__ called with num_hiddens = {num_hiddens}")
+        super().__init__()
 
-        dilation_base = 2 if use_dilation else 1
-        self.kernel_size = 3
+        self._mfcc = MFCC(winlen=winlen, winstep=winstep, numcep=numcep)
+
+        self.batch_norm = nn.BatchNorm1d(numcep*3, eps=1e-05)
+
+        """
+        2 preprocessing convolution layers with filter length 3
+        and residual connections.
+        """
 
         self._conv_1 = Conv1DBuilder.build(
             in_channels=features_filters,
             out_channels=num_hiddens,
-            kernel_size=self.kernel_size,
+            kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
-            dilation=dilation_base**0,
-            stride=self.kernel_size
+            padding=1
         )
 
         self._conv_2 = Conv1DBuilder.build(
             in_channels=num_hiddens,
             out_channels=num_hiddens,
-            kernel_size=self.kernel_size,
+            kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**1,
-            stride=1
+            padding=1
         )
 
+        """
+        1 strided convolution length reduction layer with filter
+        length 4 and stride 2 (downsampling the signal by a factor
+        of two).
+        """
         self._conv_3 = Conv1DBuilder.build(
             in_channels=num_hiddens,
             out_channels=num_hiddens,
-            kernel_size=3,
+            kernel_size=4,
+            stride=2, # timestep * 2
             use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**2,
-            stride=self.kernel_size
+            # padding=2
         )
+
+        """
+        2 convolutional layers with length 3 and
+        residual connections.
+        """
 
         self._conv_4 = Conv1DBuilder.build(
             in_channels=num_hiddens,
             out_channels=num_hiddens,
-            kernel_size=self.kernel_size,
+            kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**3,
-            stride=1
+            padding=1
         )
 
         self._conv_5 = Conv1DBuilder.build(
@@ -85,8 +123,7 @@ class ConvolutionalEncoder(nn.Module):
             out_channels=num_hiddens,
             kernel_size=3,
             use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**4,
-            stride=self.kernel_size
+            padding=1
         )
 
         """
@@ -99,17 +136,8 @@ class ConvolutionalEncoder(nn.Module):
             num_residual_layers=num_residual_layers,
             num_residual_hiddens=num_residual_hiddens,
             use_kaiming_normal=use_kaiming_normal,
-            init_dilation = dilation_base**4,
-            dilation_base = dilation_base
-        )
-
-        self._conv_post_residual_stack = Conv1DBuilder.build(
-            in_channels=num_hiddens,
-            out_channels=num_hiddens,
-            kernel_size=3,
-            use_kaiming_normal=use_kaiming_normal,
-            dilation = dilation_base**5,
-            stride=self.kernel_size
+            init_dilation = 1,
+            dilation_base = 1
         )
 
         """
@@ -129,25 +157,31 @@ class ConvolutionalEncoder(nn.Module):
         if self._verbose:
             ConsoleLogger.status('inputs size: {}'.format(inputs.size()))
 
-        x_conv_1 = F.relu(self._conv_1(inputs))
+        mfcc_inputs = self._mfcc(inputs)
+        if self._verbose:
+            ConsoleLogger.status('_mfcc output size: {}'.format(mfcc_inputs.size()))
+
+        normalized_mfcc_inputs = self.batch_norm(mfcc_inputs)
+        # print("normalized_mfcc_inputs.size()", normalized_mfcc_inputs.size())
+        # print("normalized_mfcc_inputs[0, :, 0]", normalized_mfcc_inputs[0, :, 0])
+
+        x_conv_1 = F.relu(self._conv_1(normalized_mfcc_inputs))
         if self._verbose:
             ConsoleLogger.status('x_conv_1 output size: {}'.format(x_conv_1.size()))
 
-        x_conv_2 = F.relu(self._conv_2(x_conv_1)) + x_conv_1
+        x = F.relu(self._conv_2(x_conv_1)) + x_conv_1
         if self._verbose:
-            ConsoleLogger.status('_conv_2 output size: {}'.format(x_conv_2.size()))
+            ConsoleLogger.status('_conv_2 output size: {}'.format(x.size()))
         
-        x_conv_3 = F.relu(self._conv_3(x_conv_2))
+        x_conv_3 = F.relu(self._conv_3(x))
         if self._verbose:
             ConsoleLogger.status('_conv_3 output size: {}'.format(x_conv_3.size()))
-        # x_conv_3 = x
-
 
         x_conv_4 = F.relu(self._conv_4(x_conv_3)) + x_conv_3
         if self._verbose:
             ConsoleLogger.status('_conv_4 output size: {}'.format(x_conv_4.size()))
 
-        x_conv_5 = F.relu(self._conv_5(x_conv_4))
+        x_conv_5 = F.relu(self._conv_5(x_conv_4)) + x_conv_4
         if self._verbose:
             ConsoleLogger.status('x_conv_5 output size: {}'.format(x_conv_5.size()))
 
@@ -155,11 +189,7 @@ class ConvolutionalEncoder(nn.Module):
         if self._verbose:
             ConsoleLogger.status('_residual_stack output size: {}'.format(x_residual_stack.size()))
 
-        x_conv_post_residual_stack = self._conv_post_residual_stack(x_residual_stack)
-        if self._verbose:
-            ConsoleLogger.status('_conv_post_residual_stack output size: {}'.format(x_conv_post_residual_stack.size()))
-
-        x = self._conv_out(x_conv_post_residual_stack)
+        x = self._conv_out(x_residual_stack)
         if self._verbose:
             ConsoleLogger.status('_conv_out output size: {}'.format(x.size()))
 
