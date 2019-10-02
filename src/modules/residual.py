@@ -35,7 +35,6 @@ class Residual(nn.Module):
         super(Residual, self).__init__()
         self.kernel_size=3
         relu_1 = nn.ReLU(True)
-        print("dilation", dilation)
         conv_1 = Conv1DBuilder.build(
             in_channels=in_channels,
             out_channels=num_residual_hiddens,

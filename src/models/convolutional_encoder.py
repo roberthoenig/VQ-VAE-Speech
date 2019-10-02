@@ -39,7 +39,6 @@ class ConvolutionalEncoder(nn.Module):
         use_kaiming_normal, features_filters, verbose=False, use_dilation=False):
 
         super(ConvolutionalEncoder, self).__init__()
-        print(f"ConvolutionalEncoder.__init__ called with num_hiddens = {num_hiddens}")
 
         dilation_base = 2 if use_dilation else 1
         self.kernel_size = 3

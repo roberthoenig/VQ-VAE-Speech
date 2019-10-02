@@ -44,7 +44,6 @@ class Conv1DBuilder(object):
             dilation=dilation,
             bias=bias
         )
-        # print("dilation: ", dilation)
         if use_kaiming_normal:
             conv = nn.utils.weight_norm(conv)
             nn.init.kaiming_normal_(conv.weight)
